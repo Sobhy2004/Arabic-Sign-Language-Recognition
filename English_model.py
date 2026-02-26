@@ -6,19 +6,18 @@ from sklearn.model_selection import train_test_split
 from Model import get_sign_language_model
 from data_utils import load_data_landmarks, create_dummy_landmarks
 
-def train_english(data_path, landmarker_path="hand_landmarker.task", epochs=100, batch_size=32, dummy=False):
-    print("--- Training English Fingerspilling Model ---")
+def train_english(data_path, landmarker_path="hand_landmarker.task", epochs=100, batch_size=32, dummy=False, mode="auto"):
+    print(f"--- Training English Fingerspilling Model (Mode: {mode}) ---")
 
     cache_file = "cache/english_landmarks.npy"
     if dummy:
         X, y, classes = create_dummy_landmarks(num_classes=26)
     else:
-        X, y, classes = load_data_landmarks(data_path, landmarker_path, cache_path=cache_file)
+        X, y, classes = load_data_landmarks(data_path, landmarker_path, cache_path=cache_file, mode=mode)
         if X is None: return
 
     num_classes = len(classes)
 
-    # Save classes for inference
     os.makedirs("models", exist_ok=True)
     with open("models/english_classes.json", "w", encoding="utf-8") as f:
         json.dump(classes, f)
@@ -29,9 +28,10 @@ def train_english(data_path, landmarker_path="hand_landmarker.task", epochs=100,
     model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
 
     early_stop = tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=15, restore_best_weights=True)
+    reduce_lr = tf.keras.callbacks.ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
 
     model.fit(X_train, y_train, validation_data=(X_val, y_val),
-              epochs=epochs, batch_size=batch_size, callbacks=[early_stop])
+              epochs=epochs, batch_size=batch_size, callbacks=[early_stop, reduce_lr])
 
     model.save("models/english_fingerspilling.keras")
     print("English model and classes saved.")

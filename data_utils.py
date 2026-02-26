@@ -4,9 +4,14 @@ import cv2
 import tensorflow as tf
 from Hand_tracking import HandTracker
 
-def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", sequence_length=22, cache_path=None):
+def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", sequence_length=22, cache_path=None, mode="auto"):
     """
-    Loads video frames, extracts MediaPipe landmarks, and caches them to speed up training.
+    Loads data and extracts MediaPipe landmarks.
+
+    Modes:
+    - "sequence": Assumes data/class/sample_dir/frames...
+    - "static": Assumes data/class/image.jpg (individual images)
+    - "auto": Automatically detects mode based on subfolder structure.
     """
     if cache_path and os.path.exists(cache_path):
         print(f"Loading landmarks from cache: {cache_path}")
@@ -25,36 +30,49 @@ def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", seque
 
     for cls in classes:
         cls_path = os.path.join(data_path, cls)
-        for sample in os.listdir(cls_path):
-            sample_path = os.path.join(cls_path, sample)
-            if not os.path.isdir(sample_path):
-                continue
+        items = os.listdir(cls_path)
 
-            sequence = []
-            frame_files = sorted(os.listdir(sample_path))
-            for f in frame_files:
-                if not f.lower().endswith(('.png', '.jpg', '.jpeg')):
-                    continue
-                img = cv2.imread(os.path.join(sample_path, f))
-                if img is None:
-                    continue
+        # Detect mode if auto
+        current_mode = mode
+        if current_mode == "auto":
+            has_subdirs = any(os.path.isdir(os.path.join(cls_path, i)) for i in items)
+            current_mode = "sequence" if has_subdirs else "static"
 
-                landmarks, _ = tracker.extract_landmarks(img)
-                sequence.append(landmarks)
+        print(f"Processing class: {cls} (Mode: {current_mode})")
 
-                if len(sequence) == sequence_length:
-                    break
+        if current_mode == "sequence":
+            for sample in items:
+                sample_path = os.path.join(cls_path, sample)
+                if not os.path.isdir(sample_path): continue
 
-            if len(sequence) == 0:
-                continue
+                sequence = []
+                frame_files = sorted(os.listdir(sample_path))
+                for f in frame_files:
+                    if not f.lower().endswith(('.png', '.jpg', '.jpeg')): continue
+                    img = cv2.imread(os.path.join(sample_path, f))
+                    if img is None: continue
+                    lms, _ = tracker.extract_landmarks(img)
+                    sequence.append(lms)
+                    if len(sequence) == sequence_length: break
 
-            # Pad sequence if necessary
-            if len(sequence) < sequence_length:
-                padding = [np.zeros(126)] * (sequence_length - len(sequence))
-                sequence.extend(padding)
+                if not sequence: continue
+                if len(sequence) < sequence_length:
+                    sequence.extend([np.zeros(126)] * (sequence_length - len(sequence)))
+                x_data.append(np.array(sequence))
+                y_labels.append(class_to_idx[cls])
 
-            x_data.append(np.array(sequence))
-            y_labels.append(class_to_idx[cls])
+        else: # static mode
+            for f in items:
+                if not f.lower().endswith(('.png', '.jpg', '.jpeg')): continue
+                img = cv2.imread(os.path.join(cls_path, f))
+                if img is None: continue
+
+                lms, _ = tracker.extract_landmarks(img)
+                # Create a "pseudo-sequence" by repeating the same landmark
+                # This makes the static data compatible with the GRU model
+                sequence = [lms] * sequence_length
+                x_data.append(np.array(sequence))
+                y_labels.append(class_to_idx[cls])
 
     tracker.close()
 
@@ -72,8 +90,7 @@ def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", seque
     return X, y, classes
 
 def create_dummy_landmarks(num_samples=20, sequence_length=22, num_classes=10):
-    """Generates synthetic landmark data for testing."""
     X = np.random.rand(num_samples, sequence_length, 126).astype(np.float32)
     y = np.random.randint(0, num_classes, size=(num_samples,))
     y = tf.keras.utils.to_categorical(y, num_classes=num_classes)
-    return X, y, [f"Letter_{i}" for i in range(num_classes)]
+    return X, y, [f"Label_{i}" for i in range(num_classes)]
