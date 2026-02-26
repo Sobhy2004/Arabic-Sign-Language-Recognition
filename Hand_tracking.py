@@ -10,8 +10,6 @@ class HandTracker:
         Initializes the MediaPipe Hand Landmarker.
         """
         if not os.path.exists(model_path):
-            # We don't raise error here for the training phase if we are using cached data,
-            # but for extraction or inference, it's needed.
             self.landmarker = None
         else:
             base_options = mp_core.BaseOptions(model_asset_path=model_path)
@@ -24,13 +22,13 @@ class HandTracker:
 
     def extract_landmarks(self, frame):
         """
-        Extracts 21 landmarks for up to 2 hands from a BGR frame.
-        Returns a flat array of 126 features (21 landmarks * 3 coordinates * 2 hands).
+        Extracts 21 normalized landmarks for up to 2 hands.
+        Normalization: Subtracts wrist coordinates from all other points and scales by hand size.
+        Returns a flat array of 126 features.
         """
         if self.landmarker is None:
             return np.zeros(126), None
 
-        # Convert BGR to RGB for MediaPipe
         mp_image = vision.Image.create_from_numpy_array(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
         results = self.landmarker.detect(mp_image)
 
@@ -38,8 +36,22 @@ class HandTracker:
         if results.hand_landmarks:
             for i, hand_lms in enumerate(results.hand_landmarks):
                 if i >= 2: break
-                # Flatten (x, y, z) for 21 landmarks
-                hand_array = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms]).flatten()
+
+                # Get raw coordinates
+                coords = np.array([[lm.x, lm.y, lm.z] for lm in hand_lms])
+
+                # 1. Zero-center relative to wrist (landmark 0)
+                wrist = coords[0]
+                normalized_coords = coords - wrist
+
+                # 2. Scale normalization (invariant to distance from camera)
+                # Use max distance from wrist as scaling factor
+                max_dist = np.max(np.abs(normalized_coords))
+                if max_dist > 0:
+                    normalized_coords = normalized_coords / max_dist
+
+                # Flatten and store
+                hand_array = normalized_coords.flatten()
                 start_idx = i * 63
                 landmarks[start_idx : start_idx + 63] = hand_array
 

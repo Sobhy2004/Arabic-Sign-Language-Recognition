@@ -4,19 +4,31 @@ import cv2
 import tensorflow as tf
 from Hand_tracking import HandTracker
 
-def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", sequence_length=22, cache_path=None, mode="auto"):
+def augment_landmarks(landmarks, noise_level=0.01):
     """
-    Loads data and extracts MediaPipe landmarks.
+    Adds random jittering noise to the landmarks to improve robustness.
+    """
+    if np.all(landmarks == 0):
+        return landmarks
+    noise = np.random.normal(0, noise_level, landmarks.shape)
+    return landmarks + noise
 
-    Modes:
-    - "sequence": Assumes data/class/sample_dir/frames...
-    - "static": Assumes data/class/image.jpg (individual images)
-    - "auto": Automatically detects mode based on subfolder structure.
+def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", sequence_length=22, cache_path=None, mode="auto", augment=False):
+    """
+    Loads data and extracts MediaPipe landmarks with optional augmentation.
     """
     if cache_path and os.path.exists(cache_path):
         print(f"Loading landmarks from cache: {cache_path}")
         cached_data = np.load(cache_path, allow_pickle=True).item()
-        return cached_data['X'], cached_data['y'], cached_data['classes']
+        X, y, classes = cached_data['X'], cached_data['y'], cached_data['classes']
+
+        if augment:
+            print("Applying data augmentation to cached landmarks...")
+            X_aug = np.array([np.array([augment_landmarks(f) for f in seq]) for seq in X])
+            X = np.concatenate([X, X_aug], axis=0)
+            y = np.concatenate([y, y], axis=0)
+
+        return X, y, classes
 
     tracker = HandTracker(landmarker_path)
     x_data = []
@@ -32,7 +44,6 @@ def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", seque
         cls_path = os.path.join(data_path, cls)
         items = os.listdir(cls_path)
 
-        # Detect mode if auto
         current_mode = mode
         if current_mode == "auto":
             has_subdirs = any(os.path.isdir(os.path.join(cls_path, i)) for i in items)
@@ -58,8 +69,14 @@ def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", seque
                 if not sequence: continue
                 if len(sequence) < sequence_length:
                     sequence.extend([np.zeros(126)] * (sequence_length - len(sequence)))
-                x_data.append(np.array(sequence))
+
+                seq_np = np.array(sequence)
+                x_data.append(seq_np)
                 y_labels.append(class_to_idx[cls])
+
+                if augment:
+                    x_data.append(np.array([augment_landmarks(f) for f in seq_np]))
+                    y_labels.append(class_to_idx[cls])
 
         else: # static mode
             for f in items:
@@ -68,14 +85,15 @@ def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", seque
                 if img is None: continue
 
                 lms, _ = tracker.extract_landmarks(img)
-                if np.all(lms == 0):
-                    continue # Skip images with no hand detected to improve quality
+                if np.all(lms == 0): continue
 
-                # Create a "pseudo-sequence" by repeating the same landmark
-                # This makes the static data compatible with the GRU model
                 sequence = [lms] * sequence_length
                 x_data.append(np.array(sequence))
                 y_labels.append(class_to_idx[cls])
+
+                if augment:
+                    x_data.append(np.array([augment_landmarks(lms)] * sequence_length))
+                    y_labels.append(class_to_idx[cls])
 
     tracker.close()
 

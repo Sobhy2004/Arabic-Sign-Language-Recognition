@@ -1,6 +1,7 @@
 import json
 import tensorflow as tf
 import numpy as np
+import os
 from data_utils import load_data_landmarks, create_dummy_landmarks
 
 def evaluate_arabic(model_path, classes_path, data_path=None):
@@ -19,6 +20,4 @@ def evaluate_arabic(model_path, classes_path, data_path=None):
     print(f"Arabic Accuracy: {acc:.2%}")
 
 if __name__ == "__main__":
-    import os
-    # Use raw strings (r"path") for Windows paths to avoid SyntaxWarnings
     evaluate_arabic(r"models/arabic_fingerspilling.keras", r"models/arabic_classes.json")

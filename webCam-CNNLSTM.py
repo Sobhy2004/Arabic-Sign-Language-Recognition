@@ -17,8 +17,14 @@ def speak_text(text, lang='ar'):
     try:
         tts = gTTS(text=text, lang=lang)
         tts.save("speech.mp3")
-        # In a real app, you would play the file here.
-        # os.system("mpg321 speech.mp3")
+        # For Windows/Mac/Linux cross-platform audio playback,
+        # we can use 'start' or 'open' command based on OS.
+        if sys.platform == "win32":
+            os.system("start speech.mp3")
+        elif sys.platform == "darwin":
+            os.system("open speech.mp3")
+        else:
+            os.system("mpg123 speech.mp3")
         print(f"TTS ({lang}): {text}")
     except Exception as e:
         print(f"TTS Error: {e}")
@@ -29,6 +35,7 @@ class SignLanguageUI:
 
     def draw_text(self, frame, text, position, color=(0, 255, 0), font_size=32, is_arabic=False):
         if is_arabic:
+            # Reshape Arabic text and handle Bidi (Right-to-Left)
             reshaped_text = arabic_reshaper.reshape(text)
             display_text = get_display(reshaped_text)
         else:
@@ -41,7 +48,6 @@ class SignLanguageUI:
             draw.text(position, display_text, font=font, fill=color)
             return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
         else:
-            # Fallback to OpenCV if font not found (Arabic will look wrong)
             cv2.putText(frame, display_text, position, cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
             return frame
 
@@ -53,7 +59,6 @@ def main():
     parser.add_argument("--landmarker", type=str, default="hand_landmarker.task")
     args = parser.parse_args()
 
-    # Load Model and Classes
     model = tf.keras.models.load_model(args.model)
     with open(args.classes, 'r', encoding='utf-8') as f:
         classes = json.load(f)
@@ -66,7 +71,7 @@ def main():
     sentence = []
     last_pred = None
     pred_count = 0
-    CONFIRM_FRAMES = 10 # Number of frames to confirm a letter
+    CONFIRM_FRAMES = 12
 
     print(f"Starting {args.lang.upper()} Fingerspilling Translator. Press 'q' to quit, 's' to speak, 'c' to clear.")
 
@@ -79,7 +84,8 @@ def main():
         if len(sequence_buffer) > 22:
             sequence_buffer.pop(0)
 
-        current_sentence_text = "".join(sentence) if args.lang == 'en' else " ".join(sentence[::-1])
+        # For Arabic, concatenation of fingerspilled characters should be handled by arabic-reshaper later
+        current_sentence_text = "".join(sentence)
         status_text = "Buffering..."
 
         if len(sequence_buffer) == 22:
@@ -88,7 +94,7 @@ def main():
             idx = np.argmax(prediction[0])
             confidence = prediction[0][idx]
 
-            if confidence > 0.8:
+            if confidence > 0.85:
                 letter = classes[idx]
                 status_text = f"Pred: {letter}"
 
@@ -106,7 +112,6 @@ def main():
                 status_text = "Recognizing..."
                 last_pred = None
 
-        # Draw UI
         frame = ui.draw_text(frame, status_text, (10, 40), is_arabic=(args.lang == 'ar'))
         frame = ui.draw_text(frame, f"Sentence: {current_sentence_text}", (10, 100), color=(255, 0, 0), is_arabic=(args.lang == 'ar'))
 
