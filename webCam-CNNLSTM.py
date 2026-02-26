@@ -4,71 +4,125 @@ import tensorflow as tf
 import sys
 import os
 import argparse
-from mediapipe.tasks.python import vision
-from mediapipe.tasks.python import core as mp_core
-from data_utils import extract_landmarks_from_image
+import json
+from Hand_tracking import HandTracker
+from PIL import Image, ImageDraw, ImageFont
+import arabic_reshaper
+from bidi.algorithm import get_display
+from gtts import gTTS
+import threading
 
-ARABIC_CLASSES = ['شكراً', 'أهلاً', 'نعم', 'لا', 'مساعدة', 'سلام', 'توقف', 'إلى اللقاء', 'ماذا', 'أنا']
-ENGLISH_CLASSES = ['Thank you', 'Hello', 'Yes', 'No', 'Help', 'Peace', 'Stop', 'Goodbye', 'What', 'I']
+def speak_text(text, lang='ar'):
+    """Function to run TTS in a separate thread."""
+    try:
+        tts = gTTS(text=text, lang=lang)
+        tts.save("speech.mp3")
+        # In a real app, you would play the file here.
+        # os.system("mpg321 speech.mp3")
+        print(f"TTS ({lang}): {text}")
+    except Exception as e:
+        print(f"TTS Error: {e}")
+
+class SignLanguageUI:
+    def __init__(self, font_path="arial.ttf"):
+        self.font_path = font_path if os.path.exists(font_path) else None
+
+    def draw_text(self, frame, text, position, color=(0, 255, 0), font_size=32, is_arabic=False):
+        if is_arabic:
+            reshaped_text = arabic_reshaper.reshape(text)
+            display_text = get_display(reshaped_text)
+        else:
+            display_text = text
+
+        if self.font_path:
+            img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(img_pil)
+            font = ImageFont.truetype(self.font_path, font_size)
+            draw.text(position, display_text, font=font, fill=color)
+            return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        else:
+            # Fallback to OpenCV if font not found (Arabic will look wrong)
+            cv2.putText(frame, display_text, position, cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            return frame
 
 def main():
-    parser = argparse.ArgumentParser(description="MediaPipe Tasks Sign Language Translator")
-    parser.add_argument("--lang", choices=['ar', 'en'], required=True, help="Language to translate to")
-    parser.add_argument("--model", type=str, required=True, help="Path to the trained .keras model file")
-    parser.add_argument("--landmarker_model", type=str, default="hand_landmarker.task", help="Path to MediaPipe landmarker .task file")
+    parser = argparse.ArgumentParser(description="Sign Language Fingerspilling to Sentence Translator")
+    parser.add_argument("--lang", choices=['ar', 'en'], required=True)
+    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--classes", type=str, required=True)
+    parser.add_argument("--landmarker", type=str, default="hand_landmarker.task")
     args = parser.parse_args()
 
-    if not os.path.exists(args.model):
-        print(f"Model file {args.model} not found.")
-        sys.exit(1)
-
-    print(f"Loading {args.lang.upper()} model...")
+    # Load Model and Classes
     model = tf.keras.models.load_model(args.model)
-    classes = ARABIC_CLASSES if args.lang == 'ar' else ENGLISH_CLASSES
+    with open(args.classes, 'r', encoding='utf-8') as f:
+        classes = json.load(f)
 
-    if not os.path.exists(args.landmarker_model):
-        print(f"MediaPipe hand landmarker model not found at {args.landmarker_model}. Please download it.")
-        sys.exit(1)
-
-    base_options = mp_core.BaseOptions(model_asset_path=args.landmarker_model)
-    options = vision.HandLandmarkerOptions(base_options=base_options, running_mode=vision.RunningMode.IMAGE, num_hands=2)
+    tracker = HandTracker(args.landmarker)
+    ui = SignLanguageUI()
 
     cap = cv2.VideoCapture(0)
     sequence_buffer = []
-    SEQUENCE_LENGTH = 22
+    sentence = []
+    last_pred = None
+    pred_count = 0
+    CONFIRM_FRAMES = 10 # Number of frames to confirm a letter
 
-    print(f"Starting landmark-based recognition. Press 'q' to quit.")
+    print(f"Starting {args.lang.upper()} Fingerspilling Translator. Press 'q' to quit, 's' to speak, 'c' to clear.")
 
-    with vision.HandLandmarker.create_from_options(options) as landmarker:
-        while True:
-            ret, frame = cap.read()
-            if not ret: break
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
 
-            landmarks, results = extract_landmarks_from_image(frame, landmarker)
+        landmarks, results = tracker.extract_landmarks(frame)
+        sequence_buffer.append(landmarks)
+        if len(sequence_buffer) > 22:
+            sequence_buffer.pop(0)
 
-            # Sliding window buffer
-            sequence_buffer.append(landmarks)
-            if len(sequence_buffer) > SEQUENCE_LENGTH:
-                sequence_buffer.pop(0)
+        current_sentence_text = "".join(sentence) if args.lang == 'en' else " ".join(sentence[::-1])
+        status_text = "Buffering..."
 
-            display_text = "Buffering..."
-            if len(sequence_buffer) == SEQUENCE_LENGTH:
-                input_data = np.expand_dims(np.array(sequence_buffer), 0)
-                prediction = model.predict(input_data, verbose=0)
-                pred_idx = np.argmax(prediction[0])
-                confidence = prediction[0][pred_idx]
+        if len(sequence_buffer) == 22:
+            input_data = np.expand_dims(np.array(sequence_buffer), 0)
+            prediction = model.predict(input_data, verbose=0)
+            idx = np.argmax(prediction[0])
+            confidence = prediction[0][idx]
 
-                if confidence > 0.7:
-                    display_text = f"{classes[pred_idx]} ({confidence:.2f})"
+            if confidence > 0.8:
+                letter = classes[idx]
+                status_text = f"Pred: {letter}"
+
+                if letter == last_pred:
+                    pred_count += 1
                 else:
-                    display_text = "Recognizing..."
+                    pred_count = 0
+                last_pred = letter
 
-            cv2.putText(frame, display_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX,
-                        1, (0, 255, 0), 2, cv2.LINE_AA)
-            cv2.imshow('Sign Language Translator', frame)
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+                if pred_count == CONFIRM_FRAMES:
+                    sentence.append(letter)
+                    print(f"Added: {letter}")
+                    pred_count = 0
+            else:
+                status_text = "Recognizing..."
+                last_pred = None
 
+        # Draw UI
+        frame = ui.draw_text(frame, status_text, (10, 40), is_arabic=(args.lang == 'ar'))
+        frame = ui.draw_text(frame, f"Sentence: {current_sentence_text}", (10, 100), color=(255, 0, 0), is_arabic=(args.lang == 'ar'))
+
+        cv2.imshow('Sign Language Translator', frame)
+
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'):
+            break
+        elif key == ord('c'):
+            sentence = []
+        elif key == ord('s'):
+            if sentence:
+                full_text = "".join(sentence)
+                threading.Thread(target=speak_text, args=(full_text, args.lang)).start()
+
+    tracker.close()
     cap.release()
     cv2.destroyAllWindows()
 
