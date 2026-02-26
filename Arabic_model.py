@@ -37,4 +37,5 @@ def train_arabic(data_path, landmarker_path="hand_landmarker.task", epochs=100, 
     print("Arabic model and classes saved.")
 
 if __name__ == "__main__":
-    train_arabic("data/arabic_alphabet", dummy=True, epochs=1)
+    # Use raw strings (r"path") for Windows paths to avoid SyntaxWarnings
+    train_arabic(r"data/arabic_alphabet", dummy=True, epochs=1)

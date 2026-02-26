@@ -20,4 +20,5 @@ def evaluate_english(model_path, classes_path, data_path=None):
 
 if __name__ == "__main__":
     import os
-    evaluate_english("models/english_fingerspilling.keras", "models/english_classes.json")
+    # Use raw strings (r"path") for Windows paths to avoid SyntaxWarnings
+    evaluate_english(r"models/english_fingerspilling.keras", r"models/english_classes.json")

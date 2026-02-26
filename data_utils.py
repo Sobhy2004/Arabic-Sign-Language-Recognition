@@ -68,6 +68,9 @@ def load_data_landmarks(data_path, landmarker_path="hand_landmarker.task", seque
                 if img is None: continue
 
                 lms, _ = tracker.extract_landmarks(img)
+                if np.all(lms == 0):
+                    continue # Skip images with no hand detected to improve quality
+
                 # Create a "pseudo-sequence" by repeating the same landmark
                 # This makes the static data compatible with the GRU model
                 sequence = [lms] * sequence_length
