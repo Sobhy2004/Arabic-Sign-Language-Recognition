@@ -3,43 +3,49 @@ from tensorflow.keras import layers, models
 
 def get_optimized_model(input_shape=(22, 64, 48, 1), num_classes=10):
     """
-    Creates an optimized CNN-LSTM model for gesture recognition.
+    Creates an optimized CNN-LSTM model for sign language translation.
 
-    Optimizations:
-    - Uses ReLU activation instead of tanh for faster convergence and better gradients.
-    - Adds BatchNormalization to stabilize and speed up training.
-    - Uses 128 LSTM units (instead of 500) to reduce parameters for low-end devices.
-    - Modern Keras API (TensorFlow 2.x).
+    Optimizations for Sign Language:
+    - Deep CNN with Residual-like structure for better feature extraction from complex hand shapes.
+    - Global Average Pooling (GAP) instead of a huge Flatten layer to reduce parameters.
+    - ReLU activations and BatchNormalization for training stability.
+    - LSTM with Dropout for capturing temporal dynamics of sign motions.
     """
-    model = models.Sequential(name="Optimized_Gesture_Model")
+    model = models.Sequential(name="Sign_Language_Model")
 
     # Input layer
     model.add(layers.Input(shape=input_shape))
 
-    # CNN part - Feature extraction from each frame
+    # Layer 1
     model.add(layers.TimeDistributed(layers.Conv2D(32, (3, 3), padding='same')))
     model.add(layers.TimeDistributed(layers.BatchNormalization()))
     model.add(layers.TimeDistributed(layers.Activation('relu')))
     model.add(layers.TimeDistributed(layers.MaxPooling2D((2, 2))))
 
+    # Layer 2
     model.add(layers.TimeDistributed(layers.Conv2D(64, (3, 3), padding='same')))
     model.add(layers.TimeDistributed(layers.BatchNormalization()))
     model.add(layers.TimeDistributed(layers.Activation('relu')))
     model.add(layers.TimeDistributed(layers.MaxPooling2D((2, 2))))
 
-    model.add(layers.TimeDistributed(layers.Conv2D(64, (3, 3), padding='same')))
+    # Layer 3
+    model.add(layers.TimeDistributed(layers.Conv2D(128, (3, 3), padding='same')))
     model.add(layers.TimeDistributed(layers.BatchNormalization()))
     model.add(layers.TimeDistributed(layers.Activation('relu')))
     model.add(layers.TimeDistributed(layers.MaxPooling2D((2, 2))))
 
-    model.add(layers.TimeDistributed(layers.Flatten()))
-    model.add(layers.TimeDistributed(layers.Dropout(0.5)))
+    # Transition to Temporal features
+    # Global Average Pooling reduces spatial dimensions from (H,W,C) to (1,1,C)
+    # and we flatten that to (C) per frame.
+    model.add(layers.TimeDistributed(layers.GlobalAveragePooling2D()))
+    model.add(layers.TimeDistributed(layers.Dropout(0.3)))
 
-    # RNN part - Temporal feature extraction
-    model.add(layers.LSTM(128, return_sequences=False))
-    model.add(layers.Dropout(0.5))
+    # RNN part - Sequence learning
+    model.add(layers.LSTM(128, return_sequences=False, dropout=0.2))
 
     # Output layer
+    model.add(layers.Dense(256, activation='relu'))
+    model.add(layers.Dropout(0.5))
     model.add(layers.Dense(num_classes, activation='softmax'))
 
     return model
@@ -47,7 +53,4 @@ def get_optimized_model(input_shape=(22, 64, 48, 1), num_classes=10):
 if __name__ == "__main__":
     model = get_optimized_model()
     model.summary()
-
-    # Verify parameter count
-    trainable_params = sum([tf.size(v).numpy() for v in model.trainable_variables])
-    print(f"\nTotal trainable parameters: {trainable_params:,}")
+    print(f"\nTrainable Parameters: {sum([tf.size(v).numpy() for v in model.trainable_variables]):,}")
