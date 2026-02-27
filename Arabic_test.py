@@ -6,7 +6,8 @@ from data_utils import load_data_landmarks, create_dummy_landmarks
 
 def evaluate_arabic(model_path, classes_path, data_path=None):
     print("--- Evaluating Arabic Fingerspilling Model ---")
-    model = tf.keras.models.load_model(model_path)
+    from Model import AttentionLayer
+    model = tf.keras.models.load_model(model_path, custom_objects={'AttentionLayer': AttentionLayer})
     with open(classes_path, 'r', encoding='utf-8') as f:
         classes = json.load(f)
 

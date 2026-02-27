@@ -13,12 +13,9 @@ from gtts import gTTS
 import threading
 
 def speak_text(text, lang='ar'):
-    """Function to run TTS in a separate thread."""
     try:
         tts = gTTS(text=text, lang=lang)
         tts.save("speech.mp3")
-        # For Windows/Mac/Linux cross-platform audio playback,
-        # we can use 'start' or 'open' command based on OS.
         if sys.platform == "win32":
             os.system("start speech.mp3")
         elif sys.platform == "darwin":
@@ -35,7 +32,6 @@ class SignLanguageUI:
 
     def draw_text(self, frame, text, position, color=(0, 255, 0), font_size=32, is_arabic=False):
         if is_arabic:
-            # Reshape Arabic text and handle Bidi (Right-to-Left)
             reshaped_text = arabic_reshaper.reshape(text)
             display_text = get_display(reshaped_text)
         else:
@@ -52,14 +48,17 @@ class SignLanguageUI:
             return frame
 
 def main():
-    parser = argparse.ArgumentParser(description="Sign Language Fingerspilling to Sentence Translator")
+    parser = argparse.ArgumentParser(description="Optimized Sign Language Translator")
     parser.add_argument("--lang", choices=['ar', 'en'], required=True)
     parser.add_argument("--model", type=str, required=True)
     parser.add_argument("--classes", type=str, required=True)
     parser.add_argument("--landmarker", type=str, default="hand_landmarker.task")
     args = parser.parse_args()
 
-    model = tf.keras.models.load_model(args.model)
+    # Register custom AttentionLayer if used
+    from Model import AttentionLayer
+    model = tf.keras.models.load_model(args.model, custom_objects={'AttentionLayer': AttentionLayer})
+
     with open(args.classes, 'r', encoding='utf-8') as f:
         classes = json.load(f)
 
@@ -69,22 +68,25 @@ def main():
     cap = cv2.VideoCapture(0)
     sequence_buffer = []
     sentence = []
-    last_pred = None
-    pred_count = 0
-    CONFIRM_FRAMES = 12
+    last_confirmed_letter = None
 
-    print(f"Starting {args.lang.upper()} Fingerspilling Translator. Press 'q' to quit, 's' to speak, 'c' to clear.")
+    # Prediction smoothing variables
+    pred_history = []
+    SMOOTH_WINDOW = 5
+    CONFIRM_THRESHOLD = 12
+    confirm_counter = 0
+
+    print(f"--- {args.lang.upper()} Fingerspilling Translator Started ---")
 
     while True:
         ret, frame = cap.read()
         if not ret: break
 
-        landmarks, results = tracker.extract_landmarks(frame)
+        landmarks, _ = tracker.extract_landmarks(frame)
         sequence_buffer.append(landmarks)
         if len(sequence_buffer) > 22:
             sequence_buffer.pop(0)
 
-        # For Arabic, concatenation of fingerspilled characters should be handled by arabic-reshaper later
         current_sentence_text = "".join(sentence)
         status_text = "Buffering..."
 
@@ -96,32 +98,36 @@ def main():
 
             if confidence > 0.85:
                 letter = classes[idx]
-                status_text = f"Pred: {letter}"
+                pred_history.append(letter)
+                if len(pred_history) > SMOOTH_WINDOW: pred_history.pop(0)
 
-                if letter == last_pred:
-                    pred_count += 1
+                # Check if predictions are stable
+                if pred_history.count(letter) >= (SMOOTH_WINDOW // 2 + 1):
+                    status_text = f"Pred: {letter} ({confidence:.2f})"
+                    if letter == last_confirmed_letter:
+                        confirm_counter += 1
+                    else:
+                        confirm_counter = 0
+                    last_confirmed_letter = letter
+
+                    if confirm_counter == CONFIRM_THRESHOLD:
+                        sentence.append(letter)
+                        print(f"Added: {letter}")
+                        confirm_counter = 0
                 else:
-                    pred_count = 0
-                last_pred = letter
-
-                if pred_count == CONFIRM_FRAMES:
-                    sentence.append(letter)
-                    print(f"Added: {letter}")
-                    pred_count = 0
+                    status_text = "Stabilizing..."
             else:
                 status_text = "Recognizing..."
-                last_pred = None
+                confirm_counter = 0
 
         frame = ui.draw_text(frame, status_text, (10, 40), is_arabic=(args.lang == 'ar'))
         frame = ui.draw_text(frame, f"Sentence: {current_sentence_text}", (10, 100), color=(255, 0, 0), is_arabic=(args.lang == 'ar'))
 
-        cv2.imshow('Sign Language Translator', frame)
+        cv2.imshow('Translator', frame)
 
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'):
-            break
-        elif key == ord('c'):
-            sentence = []
+        if key == ord('q'): break
+        elif key == ord('c'): sentence = []
         elif key == ord('s'):
             if sentence:
                 full_text = "".join(sentence)
