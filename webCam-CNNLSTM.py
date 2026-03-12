@@ -1,210 +1,141 @@
 import numpy as np
 import cv2
-import time
 import tensorflow as tf
 import sys
 import os
-from sklearn.preprocessing import LabelEncoder
-from sklearn.preprocessing import OneHotEncoder
-from collections import Counter
-import tflearn
-from tflearn.layers.recurrent import lstm
-from tflearn.layers.conv import conv_2d, max_pool_2d
-from tflearn.layers.estimator import regression
-from tflearn.layers.core import input_data, dropout, fully_connected, time_distributed, flatten, activation
+import argparse
+import json
+from Hand_tracking import HandTracker
+from PIL import Image, ImageDraw, ImageFont
+import arabic_reshaper
+from bidi.algorithm import get_display
+from gtts import gTTS
+import threading
 
-from image_utils import ImageText
-from PIL import Image
+def speak_text(text, lang='ar'):
+    try:
+        tts = gTTS(text=text, lang=lang)
+        tts.save("speech.mp3")
+        if sys.platform == "win32":
+            os.system("start speech.mp3")
+        elif sys.platform == "darwin":
+            os.system("open speech.mp3")
+        else:
+            os.system("mpg123 speech.mp3")
+        print(f"TTS ({lang}): {text}")
+    except Exception as e:
+        print(f"TTS Error: {e}")
 
-classes = ['Circle','Turn Left', 'Turn Right']#['Abort', 'Circle', 'Hello', 'No', 'Stop', 'Turn Left', 'Turn Right', 'Turn', 'Warn']
-num_classes = len(classes)
-model_file = ""
-layer_fc2 = ""
-label_encoder = None
-logits = None
-model = None
+class SignLanguageUI:
+    def __init__(self, font_path="arial.ttf"):
+        self.font_path = font_path if os.path.exists(font_path) else None
 
-def encoder():
-    global label_encoder
-    values = np.array(classes)
-    # print(values)
-    # integer encode
-    label_encoder = LabelEncoder()
-    integer_encoded = label_encoder.fit_transform(values)
-    # print(integer_encoded)
-    # binary encode
-    onehot_encoder = OneHotEncoder(sparse=False)
-    integer_encoded = integer_encoded.reshape(len(integer_encoded), 1)
-    onehot_encoded = onehot_encoder.fit_transform(integer_encoded)
-    # print(onehot_encoded)
-    # invert first example
-    inverted = label_encoder.inverse_transform([np.argmax(onehot_encoded[0, :])])
-    # print(inverted)
+    def draw_text(self, frame, text, position, color=(0, 255, 0), font_size=32, is_arabic=False):
+        if is_arabic:
+            reshaped_text = arabic_reshaper.reshape(text)
+            display_text = get_display(reshaped_text)
+        else:
+            display_text = text
 
-def convert_to_oneHot(index):
-    p = [0]*num_classes #np.zeros(num_classes)
-    p[index] = 1
-    return p
+        if self.font_path:
+            img_pil = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            draw = ImageDraw.Draw(img_pil)
+            font = ImageFont.truetype(self.font_path, font_size)
+            draw.text(position, display_text, font=font, fill=color)
+            return cv2.cvtColor(np.array(img_pil), cv2.COLOR_RGB2BGR)
+        else:
+            cv2.putText(frame, display_text, position, cv2.FONT_HERSHEY_SIMPLEX, 1, color, 2)
+            return frame
 
+def main():
+    parser = argparse.ArgumentParser(description="Optimized Sign Language Translator")
+    parser.add_argument("--lang", choices=['ar', 'en'], required=True)
+    parser.add_argument("--model", type=str, required=True)
+    parser.add_argument("--classes", type=str, required=True)
+    parser.add_argument("--landmarker", type=str, default="hand_landmarker.task")
+    args = parser.parse_args()
 
+    # Register custom AttentionLayer if used
+    from Model import AttentionLayer
+    model = tf.keras.models.load_model(args.model, custom_objects={'AttentionLayer': AttentionLayer})
 
-def decode(preds):
-    labels = label_encoder.inverse_transform(preds)
-    return labels
+    with open(args.classes, 'r', encoding='utf-8') as f:
+        classes = json.load(f)
 
-def cnnLSTM_model():
-    global model
-    filter_size_conv1 = 11
-    num_filters_conv1 = 5
+    tracker = HandTracker(args.landmarker)
+    ui = SignLanguageUI()
 
-    filter_size_conv2 = 6
-    num_filters_conv2 = 10
+    cap = cv2.VideoCapture(0)
+    sequence_buffer = []
+    sentence = []
+    last_confirmed_letter = None
 
-    filter_size_conv3 = 5
-    num_filters_conv3 = 5
+    # Prediction smoothing variables
+    pred_history = []
+    SMOOTH_WINDOW = 5
+    CONFIRM_THRESHOLD = 12
+    confirm_counter = 0
 
-    filter_size_conv4 = 2
-    num_filters_conv4 = 2
+    print(f"--- {args.lang.upper()} Fingerspilling Translator Started ---")
 
-    lstm_units = 500
+    while True:
+        ret, frame = cap.read()
+        if not ret: break
 
-    learning_rate = 1e-4
-    y_true = tf.placeholder(tf.float32, shape=[None, num_classes], name='y_true')
+        landmarks, _ = tracker.extract_landmarks(frame)
+        sequence_buffer.append(landmarks)
+        if len(sequence_buffer) > 22:
+            sequence_buffer.pop(0)
 
-    net = tflearn.input_data([None, 22, 64, 48, 1], name="input")
-    net = time_distributed(net, conv_2d, args=[num_filters_conv1,
-                                               filter_size_conv1, 1, 'same',
-                                               'tanh'])
-    net = time_distributed(net, max_pool_2d, args=[2])
-    net = time_distributed(net, conv_2d, args=[num_filters_conv2,
-                                               filter_size_conv2, 1, 'same',
-                                               'tanh'])
-    net = time_distributed(net, max_pool_2d, args=[2])
-    net = time_distributed(net, conv_2d, args=[num_filters_conv3,
-                                               filter_size_conv3, 1, 'same',
-                                               'tanh'])
-    net = time_distributed(net, max_pool_2d, args=[2])
-    net = time_distributed(net, flatten, args=['flat'])
-    net = lstm(net, lstm_units)
-    fc_layer = tflearn.fully_connected(net, num_classes, activation='softmax')
-    loss = tflearn.objectives.categorical_crossentropy(fc_layer, y_true)
-    network = regression(fc_layer, optimizer='adam',
-                         loss='categorical_crossentropy',
-                         learning_rate=0.001)
+        current_sentence_text = "".join(sentence)
+        status_text = "Buffering..."
 
-    # Training
-    model = tflearn.DNN(network, tensorboard_verbose=0, checkpoint_path='gestureCNNLSTM.tfl.ckpt')
+        if len(sequence_buffer) == 22:
+            input_data = np.expand_dims(np.array(sequence_buffer), 0)
+            prediction = model.predict(input_data, verbose=0)
+            idx = np.argmax(prediction[0])
+            confidence = prediction[0][idx]
 
-def diffImg(t0, t1, t2):
-  d1 = cv2.absdiff(t2, t1)
-  d2 = cv2.absdiff(t1, t0)
-  return cv2.bitwise_and(d1, d2)
+            if confidence > 0.85:
+                letter = classes[idx]
+                pred_history.append(letter)
+                if len(pred_history) > SMOOTH_WINDOW: pred_history.pop(0)
 
-def getdiffList(imgs):
-    # imgs, f = getimages(path)
-    # print ('File: ', f)
-    diff = []
-    # os.chdir('C:\\Study\\Sem 3\\ChrisTseng\\GRIT_DATASET\\Images\\abort')
-    for i, img in enumerate(imgs[2:-1]):
-        im = diffImg(imgs[i-1], img, imgs[i+1])
-        # print (f[i-1], ", ", f[i], ", ", f[i+1])
-        # plt.figure()
+                # Check if predictions are stable
+                if pred_history.count(letter) >= (SMOOTH_WINDOW // 2 + 1):
+                    status_text = f"Pred: {letter} ({confidence:.2f})"
+                    if letter == last_confirmed_letter:
+                        confirm_counter += 1
+                    else:
+                        confirm_counter = 0
+                    last_confirmed_letter = letter
 
-        # plt.imshow(im)
-        # plt.show()
-        # print (im)
-        # print (np.shape(im))
-        # cv2.imwrite(str(i)+".jpg", im)
-        diff.append(im)
-    return diff
-
-def predict(imgs):
-    return 0
-
-# def load_model():
-
-def parse_args():
-    global model_file
-    model_file = str(sys.argv[1])
-    # train_folder_name = str(sys.argv[2])
-
-
-if __name__ == '__main__':
-    # load_model()
-    # parse_args()
-    encoder()
-    img_size = (64, 48)
-    num_channels = 1
-    with tf.Session() as sess:
-        # x = tf.placeholder(tf.float32, shape=[None, img_size[0], img_size[1], num_channels], name='x')
-        # cnn_model()
-        cnnLSTM_model()
-        model.load(model_file)#("gestureCNNLSTM.tfl")
-        print (os.getcwd())
-        # cwd = os.getcwd()
-        # file = os.path.join(cwd, 'model', model_file)
-        #
-        # saver = tf.train.Saver()
-        # saver.restore(sess, file)
-        # sess.run(tf.global_variables_initializer())
-        # test_accuracy = accuracy.eval(feed_dict={x: x_data, y_true: y_label})
-        # print "Test accuracy: ", test_accuracy
-
-        cap = cv2.VideoCapture(0)
-        l = []
-        # tf.reset_default_graph()
-        while(True):
-            # Capture frame-by-frame
-            ret, frame = cap.read()
-
-            # Our operations on the frame come here
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            # Display the resulting frame
-            cv2.imshow('frame', frame)
-            if(len(l) < 26):
-                l.append(np.transpose(cv2.resize(gray, (64,48))))
-            else:
-                # print (np.shape(l))
-                # l = np.resize(l, q(-1, 64, 48, 1))
-                diff = np.resize(getdiffList(l), (-1, 64, 48, 1))
-                diff = diff.reshape(1,-1,64,48,1)
-                prediction = model.predict(diff)#sess.run(logits, feed_dict={x: diff})
-                # print (prediction)
-
-                # d = dict(Counter(prediction))
-                # s = sorted(d.items(), key=lambda x: x[1])
-                # s.reverse()
-                # print (s)
-                # # prediction = [convert_to_oneHot(i) for i in prediction]
-                # # print (prediction)
-                # prediction = [t[0] for t in s]
-                pred = np.argmax(prediction)
-                text = ""
-                color = (50, 50, 50)
-                font = "arial.ttf"#'unifont.ttf'
-                img = ImageText(Image.fromarray(frame))
-                if prediction[0][pred] > 0.5:
-                    predict = decode([pred])
-                    print (str(predict) + " " + str(prediction[0][pred]))
-                    text = str(predict[0])
-                    # print(prediction[0][pred])
-                    # print(pred)
+                    if confirm_counter == CONFIRM_THRESHOLD:
+                        sentence.append(letter)
+                        print(f"Added: {letter}")
+                        confirm_counter = 0
                 else:
-                    print ("Predicting...")
-                    text = "Predicting..."
-                # img.write_text_box((300, 125), text, box_width=200, font_filename=font,
-                #                    font_size=15, color=color, place='right')
-                #
-                # cv2.imshow('frame+prediction', cv2.cvtColor(np.array(img.image), cv2.COLOR_RGB2BGR))
+                    status_text = "Stabilizing..."
+            else:
+                status_text = "Recognizing..."
+                confirm_counter = 0
 
-                # img.image.show()
-                # print(tf.argmax(prediction, 1))
-                # send(l)
-                l = []
+        frame = ui.draw_text(frame, status_text, (10, 40), is_arabic=(args.lang == 'ar'))
+        frame = ui.draw_text(frame, f"Sentence: {current_sentence_text}", (10, 100), color=(255, 0, 0), is_arabic=(args.lang == 'ar'))
 
-            if cv2.waitKey(1) & 0xFF == ord('q'):
-                break
+        cv2.imshow('Translator', frame)
 
-        # When everything done, release the capture
-        cap.release()
-        cv2.destroyAllWindows()
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q'): break
+        elif key == ord('c'): sentence = []
+        elif key == ord('s'):
+            if sentence:
+                full_text = "".join(sentence)
+                threading.Thread(target=speak_text, args=(full_text, args.lang)).start()
+
+    tracker.close()
+    cap.release()
+    cv2.destroyAllWindows()
+
+if __name__ == "__main__":
+    main()
